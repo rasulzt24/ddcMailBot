@@ -1,0 +1,14 @@
+# Секреты и сертификаты подключаются томами при запуске, в образ не попадают
+.env
+certs/
+
+.venv/
+venv/
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+.git/
+media/
+staticfiles/
+logs_*.txt

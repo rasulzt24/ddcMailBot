@@ -1,0 +1,47 @@
+# Запуск: docker compose up -d --build      Логи: docker compose logs -f worker bot
+# Подробно — DEPLOY.md
+
+x-app: &app
+  build: .
+  image: mailbot:latest
+  # Сеть хоста, а не bridge:
+  #  - Postgres, Redis и SeaweedFS на этом же сервере доступны по 127.0.0.1;
+  #  - трафик к почте идёт через IPsec-туннель strongSwan так же, как у процессов хоста
+  #    (из bridge-сети пакеты уходят с NAT-адресом и не попадают под политику туннеля).
+  network_mode: host
+  restart: unless-stopped
+  volumes:
+    - ./.env:/app/.env:ro
+    - ./certs:/app/certs:ro
+  extra_hosts:
+    # Внутренний адрес Exchange (через VPN). Без этого DNS сервера отдаёт внешний 194.88.202.26,
+    # где IMAP/SMTP закрыты. Второй узел Exchange — 192.168.80.231.
+    - "mail.nationalbank.kz:192.168.80.233"
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+  migrate:
+    <<: *app
+    restart: "no"
+    command: python manage.py migrate --noinput
+
+  worker:
+    <<: *app
+    command: python manage.py mail_worker
+    # Воркер должен быть ровно один (IDLE и синхронизация не рассчитаны на несколько копий)
+    stop_grace_period: 60s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  bot:
+    <<: *app
+    command: python manage.py runbot
+    stop_grace_period: 20s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
