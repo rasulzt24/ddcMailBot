@@ -17,6 +17,8 @@ x-app: &app
     # Внутренний адрес Exchange (через VPN). Без этого DNS сервера отдаёт внешний 194.88.202.26,
     # где IMAP/SMTP закрыты. Второй узел Exchange — 192.168.80.231.
     - "mail.nationalbank.kz:192.168.80.233"
+    # Портал Битрикс (учёт рабочего времени), тоже доступен только через VPN
+    - "portal.bsbnb.kz:10.10.32.53"
   logging:
     driver: json-file
     options:
