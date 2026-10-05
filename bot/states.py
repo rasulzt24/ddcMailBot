@@ -26,3 +26,10 @@ class SettingsSG(StatesGroup):
 
 class AdminSG(StatesGroup):
     broadcast = State()
+
+
+class WorkdaySG(StatesGroup):
+    time = State()
+    login = State()
+    password = State()
+    remind_time = State()

@@ -1,11 +1,19 @@
+import os
 from pathlib import Path
 
 from environs import Env
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# ENV_FILE=.env.test — переключиться на тестовую среду (по умолчанию рабочий .env)
+ENV_FILE = Path(os.environ.get("ENV_FILE") or BASE_DIR / ".env")
+if not ENV_FILE.is_absolute():
+    ENV_FILE = BASE_DIR / ENV_FILE
+if not ENV_FILE.exists():
+    raise RuntimeError(f"Файл настроек не найден: {ENV_FILE}")
+
 env = Env()
-env.read_env(str(BASE_DIR / ".env"))
+env.read_env(str(ENV_FILE))
 
 SECRET_KEY = env.str("DJANGO_SECRET_KEY")
 DEBUG = env.bool("DJANGO_DEBUG", False)
@@ -20,6 +28,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "apps.accounts",
     "apps.mail",
+    "apps.worktime",
     "bot",
 ]
 
@@ -171,3 +180,18 @@ MAIL_SAVE_TO_SENT = env.bool("MAIL_SAVE_TO_SENT", True)
 # Хранить оригинал .eml. Он дублирует вложения (~x2 места); без него .eml скачивается с IMAP по запросу
 MAIL_STORE_RAW = env.bool("MAIL_STORE_RAW", False)
 MAIL_SEND_MAX_ATTEMPTS = env.int("MAIL_SEND_MAX_ATTEMPTS", 3)
+
+# --- Справочник сотрудников: адресная книга Exchange (EWS) под учётной записью пользователя ---
+MAIL_DIRECTORY_ENABLED = env.bool("MAIL_DIRECTORY_ENABLED", True)
+# Пусто -> https://<MAIL_IMAP_HOST>/EWS/Exchange.asmx
+MAIL_DIRECTORY_URL = env.str("MAIL_DIRECTORY_URL", "")
+# Домены (NetBIOS) для входа «ДОМЕН\логин», пробуются по порядку, сработавший запоминается для ящика.
+# Каждая неудачная попытка увеличивает счётчик блокировки в AD — держите список коротким.
+MAIL_DIRECTORY_DOMAINS = env.list("MAIL_DIRECTORY_DOMAINS", ["BSB", "NB"])
+
+# --- Рабочий день: учёт времени в Битриксе (портал BSB, доступен через VPN) ---
+BITRIX_ENABLED = env.bool("BITRIX_ENABLED", True)
+# portal.bsbnb.kz — тот же сервер, что portal.bsb.nb.rk, но с подходящим сертификатом (*.bsbnb.kz)
+BITRIX_URL = env.str("BITRIX_URL", "https://portal.bsbnb.kz")
+BITRIX_SITE_ID = env.str("BITRIX_SITE_ID", "s1")
+BITRIX_SSL_VERIFY = env.bool("BITRIX_SSL_VERIFY", True)

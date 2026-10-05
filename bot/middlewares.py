@@ -2,7 +2,7 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware, Bot
-from aiogram.types import CallbackQuery, Message, TelegramObject
+from aiogram.types import CallbackQuery, InlineQuery, Message, TelegramObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from apps.accounts.models import TelegramUser
@@ -52,4 +52,6 @@ class AuthMiddleware(BaseMiddleware):
             await event.answer(text)
         elif isinstance(event, CallbackQuery):
             await event.answer(text, show_alert=True)
+        elif isinstance(event, InlineQuery):
+            await event.answer([], cache_time=60, is_personal=True)  # справочник — только своим
         return None

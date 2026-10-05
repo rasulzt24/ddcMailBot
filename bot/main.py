@@ -9,7 +9,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, ErrorEvent, MenuButtonCommands
 from django.conf import settings
 
-from .handlers import admin, compose, fallback, mailbox, messages, settings as settings_handlers, start
+from .handlers import (admin, compose, directory, fallback, mailbox, messages, settings as settings_handlers,
+                       start, workday)
 from .middlewares import AuthMiddleware
 from .notifier import Notifier
 
@@ -23,6 +24,7 @@ COMMANDS = [
     BotCommand(command="sent", description="Отправленные"),
     BotCommand(command="mailbox", description="Мой почтовый ящик"),
     BotCommand(command="settings", description="Настройки"),
+    BotCommand(command="workday", description="Рабочий день (Битрикс)"),
     BotCommand(command="password", description="Сменить пароль от почты"),
     BotCommand(command="cancel", description="Отменить текущее действие"),
     BotCommand(command="help", description="Помощь"),
@@ -77,13 +79,16 @@ def build_dispatcher() -> Dispatcher:
     dp.callback_query.filter(F.message.chat.type == "private")
     dp.message.outer_middleware(AuthMiddleware())
     dp.callback_query.outer_middleware(AuthMiddleware())
+    dp.inline_query.outer_middleware(AuthMiddleware())
     dp.include_routers(
         admin.router,
         start.router,
         mailbox.router,
         settings_handlers.router,
         messages.router,
+        workday.router,
         compose.router,
+        directory.router,
         fallback.router,  # последним
     )
     return dp

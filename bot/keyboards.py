@@ -8,7 +8,8 @@ BTN_SEARCH = "🔎 Поиск"
 BTN_MAILBOX = "📬 Моя почта"
 BTN_SETTINGS = "⚙️ Настройки"
 BTN_ADMIN = "🛡 Админ"
-MENU_BUTTONS = {BTN_INBOX, BTN_SENT, BTN_COMPOSE, BTN_SEARCH, BTN_MAILBOX, BTN_SETTINGS, BTN_ADMIN}
+BTN_WORKDAY = "⏱ Рабочий день"
+MENU_BUTTONS = {BTN_INBOX, BTN_SENT, BTN_COMPOSE, BTN_SEARCH, BTN_MAILBOX, BTN_SETTINGS, BTN_ADMIN, BTN_WORKDAY}
 
 
 def main_menu(is_superadmin: bool = False) -> ReplyKeyboardMarkup:
@@ -17,6 +18,9 @@ def main_menu(is_superadmin: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton(text=BTN_SENT), KeyboardButton(text=BTN_SEARCH)],
         [KeyboardButton(text=BTN_MAILBOX), KeyboardButton(text=BTN_SETTINGS)],
     ]
+    from django.conf import settings
+    if settings.BITRIX_ENABLED:
+        rows.insert(0, [KeyboardButton(text=BTN_WORKDAY)])
     if is_superadmin:
         rows.append([KeyboardButton(text=BTN_ADMIN)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, is_persistent=True,
@@ -72,12 +76,17 @@ def cancel_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+SEARCH_BUTTON = "🔎 Найти в справочнике"
+
+
 def recipients_kb(field: str, contacts, has_items: bool, optional: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    # Inline-режим: в поле ввода подставится «@бот », дальше подсказки появляются по мере набора
+    kb.button(text=SEARCH_BUTTON, switch_inline_query_current_chat="")
     for c in contacts:
         label = c.name or c.email
         kb.button(text=f"➕ {label[:30]}", callback_data=f"cp:{field}:{c.pk}")
-    sizes = [2] * ((len(contacts) + 1) // 2)
+    sizes = [1] + [2] * ((len(contacts) + 1) // 2)
     row = 0
     if has_items:
         kb.button(text="🧹 Очистить", callback_data=f"cclear:{field}")
@@ -148,3 +157,14 @@ def reauth_kb() -> InlineKeyboardMarkup:
 
 REAUTH_BANNER = ("🔐 <b>Пароль от почты не подходит</b> — проверка почты и отправка остановлены.\n"
                  "Нажмите «🔑 Ввести новый пароль».")
+
+
+def people_pick_kb(field: str, people, offset: int) -> InlineKeyboardMarkup:
+    """Выбор из найденных в справочнике; индексы ссылаются на список в FSM (адреса в callback не влезают)."""
+    kb = InlineKeyboardBuilder()
+    for i, p in enumerate(people):
+        details = f" — {p.details}" if p.details else ""
+        kb.button(text=f"{p.name or p.email}{details}"[:64], callback_data=f"px:{field}:{offset + i}")
+    kb.button(text=SEARCH_BUTTON, switch_inline_query_current_chat="")
+    kb.adjust(1)
+    return kb.as_markup()

@@ -1,4 +1,6 @@
 """Доступ к БД для бота. Всё синхронное ORM-взаимодействие — здесь, через sync_to_async."""
+import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from datetime import timedelta
@@ -15,11 +17,12 @@ from apps.accounts.models import TelegramUser
 from apps.accounts.services import get_or_register
 from apps.mail.models import (Contact, MailAccount, MailAttachment, MailMessage, MessageRecipient,
                               OutgoingMessage, TelegramNotification)
-from apps.mail.services import compose, events
+from apps.mail.services import compose, directory, events
 
 from . import keyboards, render
 
 PAGE_SIZE = 8
+CAPTION_LIMIT = 1024
 
 close_db = sync_to_async(close_old_connections)
 _register_user = sync_to_async(get_or_register)
@@ -56,6 +59,7 @@ class AttachmentInfo:
     path: str
     size: int
     tg_file_id: str
+    content_type: str = ""
 
 
 @dataclass
@@ -65,6 +69,7 @@ class Card:
     markup: InlineKeyboardMarkup
     attachments: list[AttachmentInfo]
     auto_send_attachments: bool
+    caption: str | None = None  # короткий вариант карточки для подписи к единственному вложению
 
 
 def _local_path(field) -> str:
@@ -76,7 +81,7 @@ def _local_path(field) -> str:
 
 
 def _attachment_info(a: MailAttachment) -> AttachmentInfo:
-    return AttachmentInfo(a.pk, a.filename, _local_path(a.file), a.size, a.tg_file_id)
+    return AttachmentInfo(a.pk, a.filename, _local_path(a.file), a.size, a.tg_file_id, a.content_type)
 
 
 @sync_to_async
@@ -124,7 +129,11 @@ def save_account(user: TelegramUser, email: str, login: str, password: str) -> M
     account.error_count = 0
     account.last_error = ""
     account.last_sync_at = None
+    # Новый пароль — адресную книгу можно пробовать снова (рабочий формат логина остаётся)
+    account.directory_failed_at = None
     account.save()
+    directory.forget_sessions(account.pk)
+    _people_cache.clear()
     _forget_account(user.pk)
     events.notify_worker("account", account_id=account.pk)
     return account
@@ -190,8 +199,17 @@ def _build_card(m: MailMessage, user: TelegramUser, title: str) -> Card:
         is_read=m.is_read,
         incoming=m.direction == MailMessage.Direction.INCOMING and m.uid is not None,
     )
+    # Одно вложение — карточку можно сделать подписью к нему (одно сообщение с кнопками).
+    # Подпись в Telegram ограничена 1024 символами, поэтому текст письма в ней короче.
+    caption = None
+    if len(files) == 1:
+        for limit in (700, 450, 200):
+            text = render.message_card(m, title, thread_pos, thread_total, body_limit=limit)
+            if len(text) <= CAPTION_LIMIT:
+                caption = text
+                break
     return Card(m.pk, render.message_card(m, title, thread_pos, thread_total), markup,
-                [_attachment_info(a) for a in files], user.send_attachments)
+                [_attachment_info(a) for a in files], user.send_attachments, caption)
 
 
 @sync_to_async
@@ -495,3 +513,79 @@ def problem_accounts() -> list[MailAccount]:
 def active_chat_ids() -> list[int]:
     return list(TelegramUser.objects.filter(Q(status="active") | Q(is_superadmin=True))
                 .values_list("telegram_id", flat=True))
+
+
+# ---------- Справочник: адресная книга Exchange + история переписки ----------
+
+logger = logging.getLogger(__name__)
+PEOPLE_CACHE_TTL = 120
+DIRECTORY_RETRY_AFTER = timedelta(hours=24)
+_people_cache: dict[tuple[int, str], tuple[float, list[directory.Person]]] = {}
+
+
+@sync_to_async
+def _history_people(account_id: int, query: str, limit: int) -> list[directory.Person]:
+    qs = Contact.objects.filter(account_id=account_id)
+    for word in query.split():
+        qs = qs.filter(Q(name__icontains=word) | Q(email__icontains=word))
+    return [directory.Person(name=c.name, email=c.email, source="history")
+            for c in qs.order_by("-sent_count", "-seen_count", "-last_used_at")[:limit]]
+
+
+@sync_to_async
+def _directory_result(account_id: int, login: str | None, failed: bool) -> None:
+    if failed:
+        MailAccount.objects.filter(pk=account_id).update(directory_failed_at=timezone.now())
+    elif login:
+        MailAccount.objects.filter(pk=account_id).exclude(directory_login=login).update(
+            directory_login=login, directory_failed_at=None)
+    _accounts.clear()
+
+
+def _directory_available(account: MailAccount) -> bool:
+    from django.conf import settings
+    if not settings.MAIL_DIRECTORY_ENABLED or account.needs_reauth:
+        return False
+    return not (account.directory_failed_at
+                and account.directory_failed_at > timezone.now() - DIRECTORY_RETRY_AFTER)
+
+
+async def find_people(user: TelegramUser, query: str, limit: int = 20) -> list[directory.Person]:
+    """Сначала те, с кем уже переписывались, затем адресная книга Exchange; без повторов."""
+    query = " ".join(query.split())[:100]
+    account = await get_account(user)
+    if not account or len(query) < 2:
+        return []
+    key = (account.pk, query.lower())
+    hit = _people_cache.get(key)
+    if hit and time.monotonic() - hit[0] < PEOPLE_CACHE_TTL:
+        return hit[1][:limit]
+
+    people = await _history_people(account.pk, query, limit)
+    exchange: list[directory.Person] = []
+    if _directory_available(account):
+        try:
+            exchange, login = await asyncio.to_thread(directory.search_exchange, account, query)
+            await _directory_result(account.pk, login, failed=False)
+        except directory.DirectoryAuthError:
+            logger.warning("%s: Exchange directory login failed, pause for %s", account, DIRECTORY_RETRY_AFTER)
+            await _directory_result(account.pk, None, failed=True)
+        except Exception as e:
+            logger.warning("%s: Exchange directory search failed: %s", account, e)
+
+    by_email = {p.email: p for p in exchange}
+    merged, seen = [], set()
+    for p in people:  # история: обогащаем должностью/отделом из Exchange
+        ex = by_email.get(p.email)
+        if ex:
+            p.name, p.title, p.department, p.phone = ex.name or p.name, ex.title, ex.department, ex.phone
+        merged.append(p)
+        seen.add(p.email)
+    merged += [p for p in exchange if p.email not in seen and p.email != account.email.lower()]
+    _people_cache[key] = (time.monotonic(), merged)
+    return merged[:limit]
+
+
+def person_address(p: directory.Person) -> str:
+    """«"Имя" <email>» — без запятых в имени, чтобы адрес однозначно разбирался."""
+    return compose.format_address(p.name.replace(",", " ").strip(), p.email)

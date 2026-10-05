@@ -12,3 +12,9 @@ __pycache__/
 media/
 staticfiles/
 logs_*.txt
+
+# Тестовая среда в рабочий образ не нужна
+.env.test
+media_test/
+docker/test/
+docker-compose.test.yml

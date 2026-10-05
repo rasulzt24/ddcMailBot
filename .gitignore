@@ -7,3 +7,5 @@ __pycache__/
 media/
 staticfiles/
 logs_*.txt
+.env.test
+media_test/

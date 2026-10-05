@@ -15,7 +15,7 @@ from apps.mail.models import OutgoingMessage
 from apps.mail.services.compose import dedupe
 
 from .. import services
-from ..keyboards import (BTN_COMPOSE, MENU_BUTTONS, REAUTH_BANNER, cancel_kb, draft_kb, pick_contacts_kb,
+from ..keyboards import (BTN_COMPOSE, MENU_BUTTONS, REAUTH_BANNER, cancel_kb, draft_kb, people_pick_kb,
                          reauth_kb, recipients_kb, skip_kb)
 from ..render import esc, fmt_size, trim
 from ..states import ComposeSG
@@ -42,7 +42,13 @@ async def _save(state: FSMContext, draft: dict):
 
 # ---------- Точки входа ----------
 
-async def _start(message: Message, state: FSMContext, user: TelegramUser, mode: str, source_id: int | None):
+async def start_new_to(message: Message, state: FSMContext, user: TelegramUser, address: str):
+    """Новое письмо сразу с получателем (из карточки контакта справочника)."""
+    await _start(message, state, user, MODE.NEW, None, to=[address])
+
+
+async def _start(message: Message, state: FSMContext, user: TelegramUser, mode: str, source_id: int | None,
+                 to: list[str] | None = None):
     account = await services.get_account(user)
     if not account:
         await message.answer("📭 Сначала подключите почту: «📬 Моя почта».")
@@ -55,6 +61,8 @@ async def _start(message: Message, state: FSMContext, user: TelegramUser, mode: 
     except ObjectDoesNotExist:
         await message.answer("Письмо не найдено.")
         return
+    if to:
+        draft["to"] = to
     await state.clear()
     await state.update_data(draft=draft, editing=False)
     if mode in (MODE.REPLY, MODE.REPLY_ALL):
@@ -102,7 +110,8 @@ async def ask_recipients(message: Message, state: FSMContext, user: TelegramUser
     current = draft.get(field, [])
     contacts = await services.frequent_contacts(user, draft.get("to", []) + draft.get("cc", []))
     title = "👥 <b>Кому?</b>" if field == "to" else "📋 <b>Копия (CC)?</b>"
-    text = (f"{title}\nВведите e-mail или имя/фамилию из адресной книги. Несколько — через запятую.\n")
+    text = (f"{title}\nВведите e-mail или имя/фамилию — бот найдёт в справочнике. Несколько — через запятую.\n"
+            f"Или нажмите «🔎 Найти в справочнике» и начните печатать — появятся подсказки.\n")
     if current:
         text += "\n<b>Уже добавлены:</b>\n" + "\n".join(f"• {esc(a)}" for a in current)
     if contacts:
@@ -122,16 +131,48 @@ def _add_unique(items: list[str], new: list[str]) -> list[str]:
 async def got_recipients(message: Message, state: FSMContext, user: TelegramUser):
     field = _field_by_state(await state.get_state())
     resolved, unknown, ambiguous = await services.resolve(user, message.text)
+    # Имена, которых нет (или несколько) в истории переписки, ищем в справочнике Exchange
+    not_found, to_pick = [], {}
+    for token in unknown + list(ambiguous):
+        if "@" in token:
+            not_found.append(token)
+            continue
+        people = await services.find_people(user, token, limit=8)
+        exact = [p for p in people if p.name.casefold() == token.casefold()]
+        if len(people) == 1 or len(exact) == 1:
+            resolved.append(services.person_address((exact or people)[0]))
+        elif people:
+            to_pick[token] = people
+        else:
+            not_found.append(token)
+
     draft = await _draft(state)
     draft[field] = _add_unique(draft.get(field, []), resolved)
     await _save(state, draft)
-    if unknown:
-        await message.answer("⚠️ Не найдено в адресной книге и не похоже на e-mail: "
-                             + ", ".join(f"<code>{esc(u)}</code>" for u in unknown))
-    for token, contacts in ambiguous.items():
+    if not_found:
+        await message.answer("⚠️ Не найдено в справочнике и не похоже на e-mail: "
+                             + ", ".join(f"<code>{esc(u)}</code>" for u in not_found))
+    for token, people in to_pick.items():
+        choices = (await state.get_data()).get("pick_choices", [])
+        offset = len(choices)
+        await state.update_data(pick_choices=choices + [services.person_address(p) for p in people])
         await message.answer(f"❓ «{esc(token)}» — несколько совпадений, выберите:",
-                             reply_markup=pick_contacts_kb(field, contacts))
+                             reply_markup=people_pick_kb(field, people, offset))
     await ask_recipients(message, state, user, field)
+
+
+@router.callback_query(F.data.startswith("px:"))
+async def pick_person(callback: CallbackQuery, state: FSMContext, user: TelegramUser):
+    _, field, idx = callback.data.split(":")
+    data = await state.get_data()
+    choices, draft = data.get("pick_choices", []), data.get("draft")
+    if not draft or int(idx) >= len(choices):
+        return await callback.answer("Черновик не найден", show_alert=True)
+    address = choices[int(idx)]
+    draft[field] = _add_unique(draft.get(field, []), [address])
+    await _save(state, draft)
+    await callback.answer(f"Добавлено: {address}"[:190])
+    await ask_recipients(callback.message, state, user, field)
 
 
 @router.callback_query(F.data.startswith("cp:"))

@@ -49,6 +49,9 @@ class MailAccount(models.Model):
     smtp_security = models.CharField("SMTP шифрование", max_length=16, choices=SmtpSecurity.choices,
                                      default=_smtp_security)
     sent_folder = models.CharField("Папка «Отправленные»", max_length=255, blank=True)
+    directory_login = models.CharField("Логин для адресной книги Exchange", max_length=255, blank=True,
+                                       help_text=r"Например BSB\ivanov. Пусто — подберётся автоматически")
+    directory_failed_at = models.DateTimeField("Адресная книга: последний отказ входа", null=True, blank=True)
 
     is_active = models.BooleanField("Синхронизация включена", default=True)
     needs_reauth = models.BooleanField("Требуется повторный вход", default=False)

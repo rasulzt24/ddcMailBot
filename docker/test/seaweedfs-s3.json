@@ -1,0 +1,11 @@
+{
+  "identities": [
+    {
+      "name": "mailbot-test",
+      "credentials": [
+        { "accessKey": "mailbot-test", "secretKey": "mailbot-test-secret-key-123" }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

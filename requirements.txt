@@ -6,3 +6,5 @@ cryptography>=43
 environs>=11
 beautifulsoup4>=4.12
 django-storages[s3]>=1.14
+requests>=2.32
+requests-ntlm>=1.3

@@ -27,9 +27,52 @@ class Notifier:
 
     async def run(self):
         tasks = [asyncio.create_task(self._loop())]
+        if settings.BITRIX_ENABLED:
+            tasks.append(asyncio.create_task(self._workday_loop()))
         if settings.REDIS_URL:
             tasks.append(asyncio.create_task(self._listen()))
         await asyncio.gather(*tasks)
+
+    async def _workday_loop(self):
+        """Раз в минуту: напоминания начать/завершить рабочий день (по будням)."""
+        while True:
+            try:
+                await self._workday_reminders()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Workday reminders failed")
+            await asyncio.sleep(60)
+
+    async def _workday_reminders(self):
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+        from . import workday
+
+        for kind in ("start", "end"):
+            for prof, user in await workday.reminder_candidates(kind):
+                # Отмечаем сразу: даже если Битрикс недоступен, не дёргаем его каждую минуту
+                await workday.mark_reminded(prof.pk, kind)
+                try:
+                    st = await workday.call(user, "status")
+                except Exception as e:
+                    logger.info("Workday reminder for %s skipped: %s", user, e)
+                    continue
+                kb = InlineKeyboardBuilder()
+                if kind == "start" and not st.is_open and not st.finished_today:
+                    text = "⏰ <b>Пора начать рабочий день</b>\nВ Битриксе день ещё не начат."
+                    kb.button(text="▶️ Начать сейчас", callback_data="wd:now:open")
+                    kb.button(text="🕘 Начать в…", callback_data="wd:at:open")
+                elif kind == "end" and st.is_open and not st.unclosed_previous_day:
+                    text = "⏰ <b>Не забудьте завершить рабочий день</b>"
+                    if st.start:
+                        text += f"\nДень идёт с {st.start:%H:%M}."
+                    kb.button(text="⏹ Завершить сейчас", callback_data="wd:now:close")
+                    kb.button(text="🕕 Завершить в…", callback_data="wd:at:close")
+                else:
+                    continue
+                kb.adjust(2)
+                await self._send(user.telegram_id, text, reply_markup=kb.as_markup())
 
     async def _listen(self):
         import redis.asyncio as aioredis
